@@ -9,6 +9,10 @@ project API, burns subtitles into each version, and stitches them into one file.
 User-facing documentation is in [README.md](README.md); the agent-facing skill is
 in [skills/elevenlabs-dubbing/](skills/elevenlabs-dubbing/SKILL.md).
 
+That skill is **repo-scoped**. It travels with the code and is read from the
+checkout. Do not symlink it into `~/.agents/skills` or any agent skill directory —
+it is not a user-level skill and must not be installed as one.
+
 ## Architecture
 
 Four stages, deliberately separate commands:

@@ -139,7 +139,7 @@ dubstitch/
   pipeline.py         clip -> submit -> fetch -> render, plus the state file
   cli.py              argparse front end
 tests/                offline tests; no network, no API calls
-skills/               agent skill describing this workflow
+skills/               agent skill describing this workflow (repo-scoped, not installed)
 work/                 gitignored scratch: source, dubs, clips, renders
 ```
 
