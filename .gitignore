@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — never commit these
+.env
+.elevenlabs_api_key
+
+# Pipeline artifacts: large, regenerable, and the source clip is third-party
+work/
