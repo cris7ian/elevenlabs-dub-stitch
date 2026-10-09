@@ -1,88 +1,118 @@
 ---
 name: elevenlabs-dubbing
-description: "Use when dubbing video/audio into many languages via ElevenLabs. Clip, dub, subtitle, stitch — this repo has runnable code."
-version: 1.0.0
+description: "Use when dubbing a clip into other languages or captioning and stitching the dubs. Runs from this repo's dubstitch CLI."
+version: 2.0.0
 author: Cristian Caroli, Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [ElevenLabs, Dubbing, Subtitles, ffmpeg, Media]
-    related_skills: [ffmpeg-png-concat-pts, youtube-content]
+    tags: [Dubbing, ElevenLabs, STT, Audio, Video, Multilingual, Subtitles]
+    related_skills: [youtube-content, ffmpeg-png-concat-pts]
 ---
 
-# ElevenLabs Dubbing Pipeline
+# AI Voice Dubbing
 
 ## When to use
 
-Use when the user wants one piece of media dubbed into several languages, wants
-subtitles burned into dubbed audio, or wants several language versions stitched
-into a single comparison video. Also load this when an ElevenLabs dubbing call
-misbehaves — the pitfalls below cover the failures that are not obvious from the
-API docs.
+Use when the user wants a video or audio clip dubbed, translated, or spoken in
+other languages by a hosted API (ElevenLabs and equivalents), and also when they
+want those dubs captioned, stitched into one compilation, or both. The same
+workflow covers a single-language dub and a batch of seven.
 
-## The code lives in a repository
+## The code lives in this repository
 
-`~/Developer/elevenlabs-dub-stitch` — a working implementation of this whole
-workflow. Prefer running it over rewriting it:
+`dubstitch` implements the whole workflow and is the thing to run. Do not
+re-derive it from the API docs.
 
 ```sh
-cd ~/Developer/elevenlabs-dub-stitch
-python3 -m dubstitch clip  "<url>" --duration 5    # free
+cd ~/Developer/elevenlabs-dub-stitch        # or clone the repo
+python3 -m pytest                           # offline, free, fast
+python3 -m dubstitch fonts                  # CJK/Arabic fonts, no root
+python3 -m dubstitch clip  "<url>" --duration 5          # free
 python3 -m dubstitch submit --targets en,de,ja,fr,ar,ko,it   # BILLS
-python3 -m dubstitch fetch                          # free
+python3 -m dubstitch fetch                                # free
 python3 -m dubstitch render --order es,en,de,ja,fr,ar,ko,it  # free
-python3 -m dubstitch all "<url>" --duration 5       # all four
-python3 -m pytest                                   # offline tests
+python3 -m dubstitch all "<url>" --duration 5             # all four
 ```
 
-Key resolution order: `--api-key`, `$ELEVENLABS_API_KEY`,
-`./.elevenlabs_api_key`, `~/.config/elevenlabs/api_key`, `./.env`.
+Only `submit` (and `all`) costs money. `fetch` and `render` are idempotent, so
+iterate on captions and layout for free from the cached audio in `work/dubs/`.
 
-## Workflow
+Key resolution: `--api-key`, `$ELEVENLABS_API_KEY`, `./.elevenlabs_api_key`,
+`~/.config/elevenlabs/api_key`, `./.env`. Never paste a key into a report, a
+script or this skill.
 
-1. **Clip.** `yt-dlp --download-sections "*0-5" --force-keyframes-at-cuts`, then
-   remux to mp4. A 5-second API request is far cheaper than a 55-second one.
-2. **Submit.** `POST /v1/dubbing/project` with the file and the first
-   `target_language`. Then `POST /v1/dubbing/project/{id}/language` per extra
-   language.
-3. **Poll.** `GET /v1/dubbing/project/{id}/language` → `.languages[].status`.
-   `completed` when the output exists; the audio URL is `.outputs.lossless_audio`.
-4. **Subtitle.** `POST /v1/speech-to-text` with `model_id=scribe_v1` on the
-   *dubbed* audio, so timings match the voice actually heard.
-5. **Render.** Build ASS, burn with `ass=` + `fontsdir=`, concat with the
-   concat demuxer (`-c copy`).
+Source of truth for the API details and the burn-in rules:
+`references/elevenlabs-dubbing.md` and `references/subtitle-burn-in.md`.
+
+## Deliverable shape
+
+- **One stitched compilation**, not N loose files. Segment order: the original
+  language first, then the dubs.
+- Each segment sits under a solid title band naming the language — Latin name
+  plus native spelling when they differ (`JAPANESE  ·  日本語`).
+- House caption style: yellow (`&H0000FFFF`) with a heavy black border, 48 px on
+  a 1280-wide frame. Keep the band and the captions on every segment so the
+  compilation reads as one piece.
+- Render ONE segment in the candidate layout and let the user pick before
+  encoding the rest; a layout change means re-encoding everything.
+- Report the spoken line per language by re-transcribing the delivered audio.
+  Never report a translation from memory or from the user's guess.
+- Send a contact sheet of one still per segment alongside the video.
+- State the per-language billing. Each language is a separate charge, and
+  creating a project charges one before any output exists.
+
+## Procedure
+
+1. **Cut the source clip.** `dubstitch clip URL --duration 5` — yt-dlp takes only
+   the wanted range, then ffmpeg remuxes to mp4. Confirm the clip holds speech
+   before paying: `ffmpeg -i clip.mp4 -af silencedetect=noise=-35dB:d=0.35 -f null -`.
+2. **Submit.** `dubstitch submit --targets ...`. The first language is queued by
+   the project create call and absorbs the minimum charge; the rest are added one
+   at a time with a gap, retrying 429 with backoff.
+3. **Fetch.** `dubstitch fetch` polls to `ready`, then to no target `queued` or
+   `processing`, downloads `outputs.lossless_audio`, and muxes each dub back onto
+   the source clip. Signed URLs expire in about an hour, so download in the same
+   run that polls.
+4. **Render.** `dubstitch render --layout band --order es,en,...` transcribes each
+   *dubbed* audio (never the source transcript), builds cues, writes `.ass`,
+   burns with libass, and concatenates.
+5. **Verify, then deliver.** Pull every segment back out of the *stitched* file and
+   re-transcribe it. Each slice must come back in its own language, in order. Also
+   pull a frame per segment and look at it — rendering faults never appear in logs.
 
 ## Pitfalls
 
-- **Dubbing projects return audio only.** No video output. Mux the FLAC onto
-  the local source clip yourself.
-- **HTTP 429 on language-target creation.** Rate limited per workspace. Space
-  the calls, retry with backoff.
-- **Creating a project bills a minimum of one language** before any output
-  exists, and each extra language bills separately. Never call submit in a loop
-  or in a test.
-- **Japanese scribe output is per-character.** Join with `""`, and never split
-  cues by token count — split by character budget.
-- **One-word cues can return `start == end`** and are invisible. Enforce a
-  minimum cue duration.
-- **libass needs real fonts.** CJK and Arabic need Noto (`~/.local/share/fonts`
-  is enough, no root). Pass `fontsdir=` to the `ass` filter.
-- **`\q2` for RTL** in the ASS dialogue line. Bidi itself works in libass once
-  the font is present.
-- **A scoped key may 401 on `/v1/user`** while dubbing works fine. Test the
-  endpoints you actually use, not `/v1/user`.
+- A `401 missing_permissions` on one endpoint means the key lacks that scope, not
+  that the key is wrong. `/v1/user` needs `user_read`; dubbing and speech-to-text
+  usually work anyway. Probe the endpoint the task actually needs.
+- The dubbing project API returns **audio only** (`outputs.lossless_audio`). Mux
+  the video locally; do not wait for a video URL.
+- Rapid sequential language-target POSTs return **429**. Serialize with a sleep and
+  retry with backoff.
+- Accumulated **characters**, not token count, decide where a cue splits. CJK
+  speech-to-text returns one token per character, so a token cap slices Japanese
+  mid-word.
+- Join CJK transcripts with **no separator**, or every glyph gets a gap after it.
+- Speech-to-text returns zero-length spans for a trailing interjection. Enforce a
+  minimum on-screen time (~0.9 s) or that line never appears.
+- Repeated transcriptions of the same audio **disagree on slang and nicknames**.
+  Pin those lines to what the speaker actually says rather than accepting whichever
+  spelling came back.
+- Burning CJK or Arabic needs a font with the glyphs **and** `fontsdir` passed to
+  the `ass` filter. Missing glyphs render as boxes with no error.
+- A failed font download still writes a file. Check the status and the size, delete
+  the 404s, and only then `fc-cache`.
+- Do not judge RTL shaping from a thumbnail: correct Arabic reads as garbled at low
+  resolution. Zoom the crop before calling it broken.
+- Do not verify a concat by hashing decoded PCM at byte offsets — AAC priming and
+  seek make identical audio hash differently.
 
-## Verifying the result
+## Reference and scripts
 
-Transcribe each segment back out of the finished file — this catches wrong
-segment order and misaligned audio, which no log will show:
-
-```sh
-ffmpeg -y -ss 15.05 -t 5 -i stitched.mp4 -vn -c:a flac /tmp/seg.flac
-curl -s -H "xi-api-key: $KEY" -F file=@/tmp/seg.flac -F model_id=scribe_v1 \
-  https://api.elevenlabs.io/v1/speech-to-text | jq -r .text
-```
-
-Also pull a frame per segment and look at it; text rendering bugs (clipping,
-missing glyphs, reversed RTL) never appear in logs.
+- `references/elevenlabs-dubbing.md` — endpoints, parameters, response shapes,
+  model and language codes, error meanings, billing rules.
+- `references/subtitle-burn-in.md` — cue rules, ASS values, the title-band layout,
+  CJK/Arabic font handling, render and stitch checks.
+- Runnable code: the `dubstitch` package in this repository, with 21 offline tests.
